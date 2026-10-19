@@ -11,8 +11,17 @@ android {
         applicationId = "com.tasin.jarvis.app"
         minSdk = 26
         targetSdk = 34
-        versionCode = 1
+        versionCode = 3
         versionName = "0.3.0"
+    }
+
+    signingConfigs {
+        getByName("debug") {
+            storeFile = file("jarvis-debug.keystore")
+            storePassword = "android"
+            keyAlias = "jarvisdebug"
+            keyPassword = "android"
+        }
     }
 
     buildTypes {
