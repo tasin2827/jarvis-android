@@ -7,7 +7,6 @@ import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import android.speech.tts.TextToSpeech
-import android.speech.tts.UtteranceProgressListener
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
@@ -44,7 +43,7 @@ object JarvisController {
 
     var state by mutableStateOf(JarvisState.IDLE)
         private set
-    var statusLine by mutableStateOf("Ready")
+    var statusLine by mutableStateOf("Listening for 'Jarvis'...")
         private set
     var heard by mutableStateOf("")
         private set
@@ -71,9 +70,18 @@ object JarvisController {
     private var recognizer: SpeechRecognizer? = null
     private var tts: TextToSpeech? = null
     private var ttsReady = false
-    private var isSpeaking = false
 
-    private val wakeWords = listOf("jarvis", "hey jarvis", "hi jarvis", "জারভিস", "হে জারভিস", "জার্ভিস")
+    // সব ধরনের উচ্চারণ সাপোর্ট
+    private val wakeWords = listOf(
+        "jarvis", "jarvice", "jarvish", "jar vis", "jar viz", "charvis",
+        "জারভিস", "জার্ভিস", "জারভিচ", "জারভীস", "জারবিজ",
+        "hey jarvis", "hi jarvis", "হে জারভিস", "ওহে জারভিস"
+    )
+
+    // কথা থামানোর কমান্ড (Mute/Stop/চুপ)
+    private val muteWords = listOf(
+        "mute", "stop", "quiet", "shut up", "মিউট", "চুপ", "চুপ কর", "চুপ করো", "থামো", "থাম", "বন্ধ করো", "বন্ধ কর"
+    )
 
     fun init(context: Context) {
         if (initialized) return
@@ -90,37 +98,17 @@ object JarvisController {
 
         tts = TextToSpeech(appContext) { status ->
             ttsReady = status == TextToSpeech.SUCCESS
-            if (ttsReady) {
-                setupTtsListener()
-                say("JARVIS online. Say Jarvis anytime.")
-            }
+            // চালু হওয়ার পর একা একা কথা বলবে না, শুধু মাইক সাইলেন্টলি অন হবে
+            startContinuousListening()
         }
         state = JarvisState.IDLE
         statusLine = "Listening for 'Jarvis'..."
     }
 
-    private fun setupTtsListener() {
-        tts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
-            override fun onStart(utteranceId: String?) {
-                isSpeaking = true
-                stopListeningInternal()
-            }
-
-            override fun onDone(utteranceId: String?) {
-                isSpeaking = false
-                restartListening(400L)
-            }
-
-            @Deprecated("Deprecated in Java")
-            override fun onError(utteranceId: String?) {
-                isSpeaking = false
-                restartListening(400L)
-            }
-        })
-    }
+    // ---------------- Continuous Voice Detection ----------------
 
     fun startContinuousListening() {
-        if (!initialized || isSpeaking) return
+        if (!initialized) return
         startListeningInternal()
     }
 
@@ -133,7 +121,6 @@ object JarvisController {
     }
 
     private fun startListeningInternal() {
-        if (isSpeaking) return
         if (!SpeechRecognizer.isRecognitionAvailable(appContext)) return
 
         try {
@@ -151,7 +138,7 @@ object JarvisController {
             statusLine = "Listening for 'Jarvis'..."
             r.startListening(intent)
         } catch (e: Exception) {
-            restartListening(1200L)
+            restartListening(1000L)
         }
     }
 
@@ -162,14 +149,25 @@ object JarvisController {
         } catch (e: Exception) {}
     }
 
-    private fun restartListening(delayMs: Long = 500L) {
-        if (isSpeaking) return
+    private fun restartListening(delayMs: Long = 400L) {
         scope.launch {
             delay(delayMs)
-            if (state != JarvisState.EXECUTING && state != JarvisState.THINKING && !isSpeaking) {
+            if (state != JarvisState.EXECUTING && state != JarvisState.THINKING) {
                 startListeningInternal()
             }
         }
+    }
+
+    // তৎক্ষণাৎ কথা বন্ধ করা (Instant Silence)
+    private fun silenceImmediately() {
+        tts?.stop()
+        job?.cancel()
+        confirmation?.complete(false)
+        pendingConfirmation = null
+        heard = ""
+        state = JarvisState.IDLE
+        statusLine = "Muted. Listening..."
+        restartListening(500L)
     }
 
     private val listener = object : RecognitionListener {
@@ -180,56 +178,71 @@ object JarvisController {
         override fun onEndOfSpeech() {}
         override fun onEvent(eventType: Int, params: Bundle?) {}
 
+        // কথার মাঝখানে 'mute' বা 'চুপ' বললে তৎক্ষণাৎ ধরে ফেলবে
         override fun onPartialResults(partialResults: Bundle?) {
-            val p = partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull()
-            if (!p.isNullOrBlank()) heard = p
+            val p = partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull()?.lowercase()
+            if (!p.isNullOrBlank()) {
+                heard = p
+                if (muteWords.any { p.contains(it) }) {
+                    silenceImmediately()
+                }
+            }
         }
 
         override fun onResults(results: Bundle?) {
             val text = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull()?.trim()
             heard = ""
-            if (!text.isNullOrBlank()) {
-                handleHeardSpeech(text)
+            if (text.isNullOrBlank()) {
+                restartListening(300L)
+                return
+            }
+            val lower = text.lowercase()
+
+            // ১. কেউ Mute / Stop / চুপ বললে সাথে সাথে থামবে
+            if (muteWords.any { lower.contains(it) }) {
+                silenceImmediately()
+                return
+            }
+
+            // ২. Jarvis বলে ডেকেছে কিনা পরীক্ষা
+            val matchedWake = wakeWords.firstOrNull { lower.startsWith(it) || lower.contains(it) }
+
+            if (matchedWake != null) {
+                // শুধু জারভিস ডাকলে কমান্ড আলাদা করা
+                val command = lower.substringAfter(matchedWake).trim().trim(',', '.', '!', ' ')
+                if (command.isEmpty()) {
+                    say("Yes Boss, বলুন?")
+                } else {
+                    submit(command)
+                }
             } else {
-                restartListening(400L)
+                // Jarvis না ডাকলে সম্পূর্ণ চুপ থাকবে! কোনো কথা বলবে না
+                restartListening(200L)
             }
         }
 
         override fun onError(error: Int) {
             heard = ""
-            restartListening(600L)
+            // কোনো এরর হলেও একা একা কোনো সাউন্ড করবে না
+            restartListening(500L)
         }
     }
 
-    private fun handleHeardSpeech(text: String) {
-        val lower = text.lowercase()
-        val matchedWake = wakeWords.firstOrNull { lower.startsWith(it) || lower.contains(it) }
-
-        if (matchedWake != null) {
-            val command = lower.substringAfter(matchedWake).trim().trim(',', '.', '!', ' ')
-            if (command.isEmpty()) {
-                say("Yes Boss? How can I help?")
-            } else {
-                submit(command)
-            }
-        } else {
-            restartListening(300L)
-        }
-    }
+    // ---------------- Input & Execution ----------------
 
     fun submit(rawText: String) {
         val text = rawText.trim()
         if (text.isEmpty() || !initialized) return
         addMessage(Role.USER, text)
         if (LocalCommandParser.isStop(text)) {
-            cancelCurrent("Stopped.")
+            silenceImmediately()
             return
         }
         job = scope.launch { runRequest(text) }
     }
 
     fun cancel() {
-        if (initialized) cancelCurrent("Cancelled.")
+        silenceImmediately()
     }
 
     fun answerConfirmation(yes: Boolean) {
@@ -253,7 +266,7 @@ object JarvisController {
             }
             val svc = JarvisAccessibilityService.instance
             if (svc == null) {
-                say("Accessibility is off. Please enable it in Settings.")
+                say("Accessibility বন্ধ আছে, অন করুন।")
                 finish(JarvisState.ERROR, "Accessibility is off")
                 restartListening(2000L)
                 return
@@ -263,9 +276,8 @@ object JarvisController {
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            say("Something went wrong.")
             finish(JarvisState.ERROR, "Error")
-            restartListening(1500L)
+            restartListening(1000L)
         }
     }
 
@@ -277,7 +289,7 @@ object JarvisController {
         }
         val key = settings.apiKey
         if (key.isBlank()) {
-            say("Please add your Gemini API key in Settings.")
+            say("Settings এ Gemini API key দিন।")
             finish(JarvisState.IDLE, "Ready")
             return null
         }
@@ -286,8 +298,6 @@ object JarvisController {
         val result = provider.plan(text, JarvisAccessibilityService.instance?.foregroundPackage())
         val plan = result.getOrNull()
         if (plan == null) {
-            val reason = result.exceptionOrNull()?.message ?: "AI error."
-            say("Couldn't process that: $reason")
             finish(JarvisState.ERROR, "AI error")
             return null
         }
@@ -298,12 +308,12 @@ object JarvisController {
         for ((index, step) in steps.withIndex()) {
             currentCoroutineContext().ensureActive()
             val svc = JarvisAccessibilityService.instance ?: break
-            statusLine = "Executing step ${index + 1}/${steps.size}"
+            statusLine = "Step ${index + 1}/${steps.size}"
 
             if (needsConfirmation(step, svc)) {
-                val approved = askConfirmation("Should I proceed?")
+                val approved = askConfirmation("কাজটি কি করব?")
                 if (!approved) {
-                    say("Cancelled.")
+                    say("বাতিল করা হলো।")
                     break
                 }
             }
@@ -316,7 +326,7 @@ object JarvisController {
             delay(500)
         }
         finish(JarvisState.DONE, "Ready")
-        restartListening(1200L)
+        restartListening(1000L)
     }
 
     private fun needsConfirmation(step: Step, svc: JarvisAccessibilityService): Boolean {
@@ -338,17 +348,6 @@ object JarvisController {
         }
     }
 
-    private fun cancelCurrent(message: String) {
-        recognizer?.cancel()
-        tts?.stop()
-        job?.cancel()
-        confirmation?.complete(false)
-        pendingConfirmation = null
-        heard = ""
-        finish(JarvisState.IDLE, "Ready")
-        say(message)
-    }
-
     private fun finish(newState: JarvisState, status: String) {
         state = newState
         statusLine = status
@@ -360,10 +359,7 @@ object JarvisController {
     }
 
     private fun speak(text: String) {
-        if (!ttsReady || !voiceReplies) {
-            restartListening(500L)
-            return
-        }
+        if (!ttsReady || !voiceReplies) return
         val engine = tts ?: return
         val bangla = text.any { it in '\u0980'..'\u09FF' }
         val locale = if (bangla) Locale("bn", "BD") else Locale.US
@@ -371,7 +367,7 @@ object JarvisController {
             engine.setLanguage(locale)
         }
         val params = Bundle()
-        engine.speak(text.take(400), TextToSpeech.QUEUE_FLUSH, params, "jarvis_msg")
+        engine.speak(text.take(400), TextToSpeech.QUEUE_FLUSH, params, "jarvis_speech")
     }
 
     private fun addMessage(role: Role, text: String) {
@@ -408,6 +404,6 @@ object JarvisController {
     }
 
     fun onMicDenied() {
-        addMessage(Role.SYSTEM, "Microphone permission is required for voice activation.")
+        addMessage(Role.SYSTEM, "Microphone permission required.")
     }
 }
