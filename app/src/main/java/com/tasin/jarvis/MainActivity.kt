@@ -15,11 +15,15 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.MaterialTheme
@@ -27,6 +31,8 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
@@ -34,34 +40,79 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.tasin.jarvis.accessibility.JarvisAccessibilityService
 
 private val Navy = Color(0xFF050B1A)
 private val Cyan = Color(0xFF00E5FF)
 private val Blue = Color(0xFF2979FF)
+private val Green = Color(0xFF00E676)
+private val Red = Color(0xFFFF5252)
 
 class MainActivity : ComponentActivity() {
+
+    private var serviceConnected by mutableStateOf(false)
+    private var lastResult by mutableStateOf("")
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContent { JarvisHome() }
+        setContent {
+            JarvisHome(
+                connected = serviceConnected,
+                result = lastResult,
+                onOpenSettings = {
+                    startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+                },
+                onTestHome = { runGlobal("Home") { it.pressHome() } },
+                onTestBack = { runGlobal("Back") { it.pressBack() } }
+            )
+        }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        serviceConnected = JarvisAccessibilityService.instance != null
+    }
+
+    private fun runGlobal(name: String, action: (JarvisAccessibilityService) -> Boolean) {
+        val service = JarvisAccessibilityService.instance
+        if (service == null) {
+            serviceConnected = false
+            lastResult = "Service is not connected. Enable it in Accessibility settings."
+            return
+        }
+        val accepted = action(service)
+        lastResult = if (accepted) {
+            "$name: Android accepted the command (screen change not verified yet)."
+        } else {
+            "$name: Android rejected the command."
+        }
     }
 }
 
 @Composable
-private fun JarvisHome() {
-    val context = LocalContext.current
+private fun JarvisHome(
+    connected: Boolean,
+    result: String,
+    onOpenSettings: () -> Unit,
+    onTestHome: () -> Unit,
+    onTestBack: () -> Unit
+) {
     MaterialTheme(colorScheme = darkColorScheme(primary = Cyan, background = Navy, surface = Navy)) {
         Column(
-            modifier = Modifier.fillMaxSize().background(Navy).padding(24.dp),
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Navy)
+                .verticalScroll(rememberScrollState())
+                .padding(24.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.Center
         ) {
             ArcReactor()
-            Spacer(Modifier.height(32.dp))
+            Spacer(Modifier.height(24.dp))
             Text(
                 text = "JARVIS",
                 color = Cyan,
@@ -69,21 +120,58 @@ private fun JarvisHome() {
                 fontWeight = FontWeight.Bold,
                 letterSpacing = 8.sp
             )
-            Spacer(Modifier.height(8.dp))
-            Text(text = "Build v0.2 - setup stage", color = Color(0xFF8FA3BF), fontSize = 14.sp)
+            Spacer(Modifier.height(4.dp))
+            Text(text = "Build v0.3 - accessibility stage", color = Color(0xFF8FA3BF), fontSize = 14.sp)
             Spacer(Modifier.height(24.dp))
+
             Text(
-                text = "Voice and screen control are not built yet. The button below opens Android's real Accessibility settings.",
+                text = if (connected) "Accessibility service: ON" else "Accessibility service: OFF",
+                color = if (connected) Green else Red,
+                fontSize = 18.sp,
+                fontWeight = FontWeight.SemiBold
+            )
+            Spacer(Modifier.height(8.dp))
+            Text(
+                text = if (connected) {
+                    "Connected. The two buttons below send real Home and Back commands."
+                } else {
+                    "Not connected yet. Tap the button below, find JARVIS AI Assistant in the list and switch it on."
+                },
                 color = Color.White,
                 fontSize = 15.sp,
                 textAlign = TextAlign.Center
             )
-            Spacer(Modifier.height(24.dp))
+            Spacer(Modifier.height(16.dp))
+
             Button(
-                onClick = { context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) },
+                onClick = onOpenSettings,
                 colors = ButtonDefaults.buttonColors(containerColor = Cyan, contentColor = Navy)
             ) {
                 Text("Open Accessibility settings")
+            }
+
+            if (connected) {
+                Spacer(Modifier.height(12.dp))
+                Row {
+                    Button(
+                        onClick = onTestHome,
+                        colors = ButtonDefaults.buttonColors(containerColor = Blue, contentColor = Color.White)
+                    ) {
+                        Text("Test: Home")
+                    }
+                    Spacer(Modifier.width(12.dp))
+                    Button(
+                        onClick = onTestBack,
+                        colors = ButtonDefaults.buttonColors(containerColor = Blue, contentColor = Color.White)
+                    ) {
+                        Text("Test: Back")
+                    }
+                }
+            }
+
+            if (result.isNotEmpty()) {
+                Spacer(Modifier.height(16.dp))
+                Text(text = result, color = Color(0xFF8FA3BF), fontSize = 14.sp, textAlign = TextAlign.Center)
             }
         }
     }
@@ -98,9 +186,9 @@ private fun ArcReactor() {
         animationSpec = infiniteRepeatable(tween(6000, easing = LinearEasing), RepeatMode.Restart),
         label = "angle"
     )
-    Canvas(modifier = Modifier.size(180.dp)) {
+    Canvas(modifier = Modifier.size(160.dp)) {
         val outerInset = 6.dp.toPx()
-        val innerInset = 28.dp.toPx()
+        val innerInset = 26.dp.toPx()
         drawArc(
             color = Cyan,
             startAngle = angle,
@@ -119,6 +207,6 @@ private fun ArcReactor() {
             size = Size(size.width - 2 * innerInset, size.height - 2 * innerInset),
             style = Stroke(width = 4.dp.toPx(), cap = StrokeCap.Round)
         )
-        drawCircle(color = Cyan, radius = 14.dp.toPx())
+        drawCircle(color = Cyan, radius = 13.dp.toPx())
     }
 }

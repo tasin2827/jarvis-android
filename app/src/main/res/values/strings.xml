@@ -1,3 +1,4 @@
 <resources>
     <string name="app_name">JARVIS AI Assistant</string>
+    <string name="accessibility_service_description">JARVIS uses this service to read what is on your screen and to press buttons, scroll and type when you ask it to. You can turn it off at any time in Accessibility settings.</string>
 </resources>
